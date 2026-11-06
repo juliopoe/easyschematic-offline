@@ -50,6 +50,17 @@ jobs:
           npm ci
           npm run generate-fallback
           npx vite build --base=/schematic/
+      - name: Gerätekatalog dazulegen
+        # Der Katalog (Geräte samt Anschlüssen) kommt aus der Datenbank von EasySchematic; das Toolkit ordnet damit eingelesene
+        # Pläne passenden Geräten zu. Fehlt er (Dienst nicht erreichbar), läuft alles andere trotzdem.
+        if: steps.v.outputs.neu == 'ja'
+        run: |
+          if curl -fsS --max-time 120 https://api.easyschematic.live/templates -o katalog-roh.json; then
+            jq -c '[.[] | select(.deviceType != "expansion-card") | {id,version,deviceType,label,manufacturer,modelNumber,searchTerms,shortName,widthMm,heightMm,depthMm,weightKg,powerDrawW,voltage,ports} | with_entries(select(.value != null))]' katalog-roh.json | gzip -9 > quelle/dist/katalog.json.gz
+            ls -l quelle/dist/katalog.json.gz
+          else
+            echo "Katalog nicht erreichbar – Paket ohne Katalog"
+          fi
       - name: Paket schnüren
         if: steps.v.outputs.neu == 'ja'
         run: |
