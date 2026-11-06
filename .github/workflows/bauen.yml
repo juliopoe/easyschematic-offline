@@ -1,0 +1,81 @@
+name: Bauen
+
+# Baut die Seite von EasySchematic (duremovich/EasySchematic) für das VideoToolkit:
+# Unterpfad /schematic/, ohne Änderungen am Quellcode. Läuft täglich und baut nur, wenn es die Version hier noch nicht gibt.
+on:
+  schedule:
+    - cron: '17 4 * * *'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Version bauen (leer = neueste von EasySchematic)'
+        required: false
+
+permissions:
+  contents: write
+
+jobs:
+  bauen:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Version bestimmen
+        id: v
+        run: |
+          tag="${{ inputs.tag }}"
+          [ -n "$tag" ] || tag=$(gh api repos/duremovich/EasySchematic/releases/latest --jq .tag_name)
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if gh release view "$tag" --repo "${{ github.repository }}" >/dev/null 2>&1 && [ -z "${{ inputs.tag }}" ]; then
+            echo "neu=nein" >> "$GITHUB_OUTPUT"
+          else
+            echo "neu=ja" >> "$GITHUB_OUTPUT"
+          fi
+      - uses: actions/checkout@v4
+        if: steps.v.outputs.neu == 'ja'
+        with:
+          repository: duremovich/EasySchematic
+          ref: ${{ steps.v.outputs.tag }}
+          path: quelle
+      - uses: actions/setup-node@v4
+        if: steps.v.outputs.neu == 'ja'
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: quelle/package-lock.json
+      - name: Bauen
+        if: steps.v.outputs.neu == 'ja'
+        working-directory: quelle
+        run: |
+          npm ci
+          npm run generate-fallback
+          npx vite build --base=/schematic/
+      - name: Paket schnüren
+        if: steps.v.outputs.neu == 'ja'
+        run: |
+          cp quelle/LICENSE quelle/dist/LICENSE
+          printf 'EasySchematic %s (AGPL-3.0), unveraendert gebaut.\nQuellcode: https://github.com/duremovich/EasySchematic/tree/%s\n' "${{ steps.v.outputs.tag }}" "${{ steps.v.outputs.tag }}" > quelle/dist/QUELLE.txt
+          (cd quelle/dist && zip -qr "$GITHUB_WORKSPACE/easyschematic.zip" .)
+          ls -l easyschematic.zip
+      - name: Veröffentlichen
+        if: steps.v.outputs.neu == 'ja'
+        run: |
+          tag="${{ steps.v.outputs.tag }}"
+          gh release delete "$tag" --repo "${{ github.repository }}" --yes --cleanup-tag 2>/dev/null || true
+          gh release create "$tag" easyschematic.zip --repo "${{ github.repository }}" \
+            --title "EasySchematic $tag (offline-Paket)" \
+            --notes "Unveränderter Build von https://github.com/duremovich/EasySchematic/releases/tag/$tag, Unterpfad /schematic/. Lizenz AGPL-3.0."
+
+  wachhalten:
+    # GitHub schaltet geplante Abläufe nach 60 Tagen ohne Aktivität ab: einmal im Monat ein Lebenszeichen.
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          if [ "$(date +%d)" = "01" ]; then
+            date -u +%F > stand.txt
+            git config user.name github-actions
+            git config user.email github-actions@users.noreply.github.com
+            git add stand.txt && git commit -qm "Lebenszeichen" && git push
+          fi
